@@ -53,6 +53,38 @@ Then, in the window:
 - Rust stable
 - Single window, single webview — no custom menu, no plugins
 
+## Root cause & proposed solution
+
+The menu items themselves are correct: `muda` sets the right key equivalents
+(`initWithTitle:action:keyEquivalent:` with a `Command` modifier mask), and
+clicking them dispatches the action fine. So the failure is specifically in the
+**key-equivalent dispatch** — the keyDown never matches a menu item.
+
+A local `NSEvent` monitor confirms the keyDown reaches `NSApp.sendEvent:`, but
+`[NSApp.mainMenu performKeyEquivalent:event]` does not fire the matching item.
+This points at how Tauri/wry routes key events on macOS: a keyDown should be
+offered to the main menu's key equivalents — and, on a match, dispatch the
+item's action and consume the event — *before* it falls through to the webview
+unhandled.
+
+A concrete direction (in `tao`/`wry`'s macOS window) is to route keyDown
+through the menu first, e.g.:
+
+```objc
+- (void)sendEvent:(NSEvent *)event {
+    if (event.type == NSEventTypeKeyDown
+        && NSApp.mainMenu
+        && [NSApp.mainMenu performKeyEquivalent:event]) {
+        return; // handled by the menu (Cmd+C/V/X/A/Z, …)
+    }
+    [super sendEvent:event];
+}
+```
+
+(or the equivalent `performKeyEquivalent:` override on the window). The expected
+result is that a keyDown matching an Edit item's key equivalent dispatches that
+selector and is consumed, instead of being dropped on the floor.
+
 ## Notes / workarounds
 
 The keyboard shortcuts can be restored by intercepting key events at the app
